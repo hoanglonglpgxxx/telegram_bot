@@ -23,7 +23,7 @@ exports.handlers = function (bot) {
         await ctx.reply('✅ Bạn đã chọn Khoản thu. Vui lòng **nhập tên danh mục** bạn muốn thêm:');
 
         // 3. Xác nhận callback query (bắt buộc)
-        await ctx.answerCbQuery();[3];
+        await ctx.answerCbQuery();
     });
     bot.action('select_outcome', (ctx) => ctx.reply('test'));
 
