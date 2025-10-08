@@ -15,23 +15,48 @@ jobs:
           submodules: true
           fetch-depth: 0
 
-      - name: Setup Ruby and Bundler cache
+      - name: Check for Jekyll sources or prebuilt _site
+        id: check
+        run: |
+          build=false
+          publish_exists=false
+          if [ -f Gemfile ] || [ -f _config.yml ]; then build=true; fi
+          if [ -d _site ]; then publish_exists=true; fi
+          echo "build=${build}" >> $GITHUB_OUTPUT
+          echo "publish_exists=${publish_exists}" >> $GITHUB_OUTPUT
+
+      - name: Print detection results
+        run: |
+          echo "Detected Jekyll build files: ${{ steps.check.outputs.build }}"
+          echo "Detected prebuilt _site: ${{ steps.check.outputs.publish_exists }}"
+
+      - name: Setup Ruby and Bundler (only if Jekyll sources present)
+        if: steps.check.outputs.build == 'true'
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.1'
           bundler-cache: true
 
-      - name: Install dependencies
+      - name: Install dependencies (only if Jekyll sources present)
+        if: steps.check.outputs.build == 'true'
         run: |
           gem install bundler
           bundle config set --local path vendor/bundle
           bundle install --jobs 4 --retry 3
 
-      - name: Build site with Jekyll
+      - name: Build site with Jekyll (only if Jekyll sources present)
+        if: steps.check.outputs.build == 'true'
         run: |
           bundle exec jekyll build --verbose --trace
 
+      - name: Skip deployment when no site artifact found
+        if: steps.check.outputs.build == 'false' && steps.check.outputs.publish_exists == 'false'
+        run: |
+          echo "No Jekyll sources (Gemfile/_config.yml) and no _site directory found. Skipping deploy."
+          echo "If you want to deploy, add a Gemfile/_config.yml or commit a prebuilt _site directory." 
+
       - name: Deploy to GitHub Pages (gh-pages branch)
+        if: steps.check.outputs.build == 'true' || steps.check.outputs.publish_exists == 'true'
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -39,7 +64,7 @@ jobs:
           commit_message: "Deploy Jekyll site: ${{ github.sha }}"
 
 # Notes:
-# - This workflow assumes your Jekyll site is in the repository root and outputs to `_site`.
-# - If your site sources live in a subfolder (for example `docs/`), set `publish_dir` accordingly.
-# - The action will push the generated site to the `gh-pages` branch. Make sure your repository's
-#   GitHub Pages settings are configured to serve from the `gh-pages` branch (or the Pages > GitHub Actions option).
+# - This workflow detects whether the repository contains Jekyll sources (Gemfile or _config.yml)
+#   or a prebuilt `_site` folder. It will only attempt to install/build Jekyll when sources are present
+#   and will only deploy when `_site` exists (either prebuilt or produced by the build).
+# - If your Jekyll sources live in a subfolder, update the checks and `publish_dir` accordingly.
