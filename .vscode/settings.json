@@ -1,0 +1,7 @@
+{
+    "appService.zipIgnorePattern": [
+        ".vscode{,/**}"
+    ],
+    "appService.defaultWebAppToDeploy": "/subscriptions/418400ff-26d7-4502-983c-99712b354b02/resourceGroups/telegram-bot_group/providers/Microsoft.Web/sites/telegram-bot",
+    "appService.deploySubpath": "."
+}

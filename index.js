@@ -1,11 +1,11 @@
-dotenv.config({ path: './.env' });
-eventHandlers.handlers(bot);
-const { Telegraf, session } = require('telegraf');
 const dotenv = require('dotenv');
+dotenv.config({ path: './.env' });
+
+const { Telegraf, session } = require('telegraf');
 const mongoose = require('mongoose');
+const { Mongo } = require('@telegraf/session/mongodb');
 const eventHandlers = require('./modules/eventHandlers');
 
-dotenv.config({ path: './.env' });
 
 if (!process.env.BOT_TOKEN) {
     console.error('Environment variable BOT_TOKEN is required. Add it to .env');
@@ -19,25 +19,50 @@ const DB = process.env.DATABASE ? process.env.DATABASE.replace(
     encodeURIComponent(process.env.DATABASE_PASSWORD || '')
 ) : null;
 
-if (DB) {
-    mongoose
-        .connect(DB)
-        .then(() => console.log('DB connected'))
-        .catch((err) => console.error('DB connection error:', err));
-} else {
-    console.log('No DATABASE configuration found, skipping database connection');
+
+async function main() {
+    if (DB) {
+        try {
+            await mongoose.connect(DB, {
+                serverSelectionTimeoutMS: 30000,
+                socketTimeoutMS: 45000,
+                retryWrites: true,
+            });
+            console.log('DB connected');
+        } catch (err) {
+            console.error('DB connection error:', err);
+            process.exit(1);
+        }
+    } else {
+        console.log('No DATABASE configuration found, skipping database connection');
+    }
+
+    const store = Mongo({
+        client: mongoose.connection.getClient(),
+        collection: 'chatbot_session'
+    });
+
+    bot.use(session({
+        store,
+        defaultSession: () => ({ counter: 0 })
+    }));
+
+    eventHandlers.handlers(bot);
+    bot.start(async (ctx) => {
+        ctx.session.counter = ctx.session.counter || 0;
+        ctx.session.counter++;
+        await ctx.reply(`Hello! You've started me ${ctx.session.counter} times.`);
+    });
+    // -----------------------------------------------------------
+    // 6. KHỞI CHẠY BOT
+    // -----------------------------------------------------------
+    bot.launch()
+        .then(() => console.log('Bot launched'))
+        .catch((err) => console.error('Bot launch error:', err));
+
+    // graceful shutdown
+    process.once('SIGINT', () => bot.stop('SIGINT'));
+    process.once('SIGTERM', () => bot.stop('SIGTERM'));
 }
 
-// register session middleware before handlers so handlers can use ctx.session
-bot.use(session({ defaultSession: () => ({ count: 0 }) }));
-
-// attach handlers
-eventHandlers.handlers(bot);
-
-bot.launch()
-    .then(() => console.log('Bot launched'))
-    .catch((err) => console.error('Bot launch error:', err));
-
-// graceful shutdown
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+main().catch(err => console.error('Bot startup failed:', err));
