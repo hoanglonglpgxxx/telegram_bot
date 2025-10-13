@@ -67,22 +67,40 @@ exports.handlers = function (bot) {
     });
 
     async function handleAddMoney(msg, ctx) {
-        const spendValue = msg;
-        console.log(ctx);
+        let moneyMsg = msg;
+        console.log(ctx.session);
+
+        moneyMsg = moneyMsg.trim().split('|');
         try {
             // const category = await Category.create({ name: categoryName });
-            const money = spendValue;
-            await ctx.reply(`Đã nhập <b>${money}</b> ₫ vào bảng <b>${ctx.session.currentCategory}</b>.`, { parse_mode: 'HTML' });
+            const money = parseFloat(moneyMsg[0].trim());
+            if (money) {
+                await ctx.reply(`Đã nhập <b>${money}</b>₫, mục đích: <b>${moneyMsg[1].trim()}</b>, vào bảng <b>${ctx.session.currentCategory}</b>.`, { parse_mode: 'HTML' });
+                delete ctx.session.currentCategory;
+                delete ctx.session.awaiting;
+            } else {
+                await ctx.reply(`Số tiền sai định dạng, nhập lại`);
+            }
         } catch (err) {
             if (err.name === 'ValidationError') {
                 const messages = Object.values(err.errors).map(e => e.message).join('; ');
                 await ctx.reply(`Lỗi dữ liệu: ${messages}`);
             } else {
                 console.error('Error saving category:', err);
-                await ctx.reply('Đã xảy ra lỗi khi lưu danh mục.');
+                await ctx.reply('Đã xảy ra lỗi khi lưu số tiền.');
             }
+            delete ctx.session.currentCategory;
+            delete ctx.session.awaiting;
         }
-        delete ctx.session.currentCategory;
-        delete ctx.session.awaiting;
+
     }
+
+    bot.command('delete', (ctx) => {
+        console.log(123);
+        let k = 0;
+        for (let i = 0; i <= 100; i++) {
+            k = ctx.message.message_id - i;
+            ctx.deleteMessage(k);
+        }
+    });
 };
