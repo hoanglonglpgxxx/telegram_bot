@@ -1,4 +1,17 @@
+const fs = require('fs');
 const Category = require('../models/categoryModel');
+
+function writeLog(message) {
+    const timestamp = new Date().toISOString();
+    const logEntry = `${timestamp} - ${message}\n`;
+
+    fs.appendFile('./logs/application.log', logEntry, (err) => {
+        if (err) {
+            console.error('Failed to write to log file:', err);
+        }
+    });
+}
+
 
 exports.handlers = function (bot) {
     bot.start((ctx) => ctx.reply('Welcome!'));
@@ -16,14 +29,14 @@ exports.handlers = function (bot) {
         });
     });
     bot.action('select_income', async (ctx) => {
-
+        console.log(ctx);
         ctx.session.awaiting = 'income_category';
         ctx.session.transactionType = 'income';
         console.log(ctx.session);
 
         // 2. Gửi tin nhắn
         await ctx.reply('✅ Bạn đã chọn Khoản thu. Vui lòng <b>nhập tên danh mục</b> bạn muốn thêm:', { parse_mode: 'HTML' });
-
+        writeLog(`${Date.now()} | select_income`);
         // 3. Xác nhận callback query (bắt buộc)
         await ctx.answerCbQuery();
     });
@@ -42,6 +55,7 @@ exports.handlers = function (bot) {
             try {
                 const category = await Category.create({ name: categoryName });
                 await ctx.reply(`Đã lưu danh mục <b>${category.name}</b> vào DB. Nhập khoản chi tiêu: `, { parse_mode: 'HTML' });
+                writeLog(`${Date.now()} | Đã lưu danh mục ${category.name} vào DB`);
             } catch (err) {
                 if (err.code === 11000) {
                     await ctx.reply('Danh mục này đã tồn tại. Nhập khoản chi tiêu: ');
@@ -76,6 +90,7 @@ exports.handlers = function (bot) {
             const money = parseFloat(moneyMsg[0].trim());
             if (money) {
                 await ctx.reply(`Đã nhập <b>${money}</b>₫, mục đích: <b>${moneyMsg[1].trim()}</b>, vào bảng <b>${ctx.session.currentCategory}</b>.`, { parse_mode: 'HTML' });
+                writeLog(`${Date.now()} | Đã nhập ${money}₫, mục đích: ${moneyMsg[1].trim()}, vào bảng${ctx.session.currentCategory}.`);
                 delete ctx.session.currentCategory;
                 delete ctx.session.awaiting;
             } else {
