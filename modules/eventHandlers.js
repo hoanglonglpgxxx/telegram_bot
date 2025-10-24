@@ -28,6 +28,11 @@ exports.handlers = function (bot) {
             }
         });
     });
+    bot.command('clear', async (ctx) => {
+        ctx.session = {};
+        await ctx.reply('Xóa session thành công !');
+        writeLog(`${Date.now()} | Xóa session thành công!`);
+    });
     bot.action('select_income', async (ctx) => {
         console.log(ctx);
         ctx.session.awaiting = 'income_category';
