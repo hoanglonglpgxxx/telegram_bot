@@ -156,35 +156,6 @@ async function initRedis() {
 // --- Khởi tạo Redis và start server sau khi kết nối xong ---
 initRedis().then((ioInstance) => {
     if (ioInstance) {
-        // -- Add users vào room --
-        app.post('/internal/add-users-to-room', (req, res) => {
-            try {
-                const { roomId, users, roomName } = req.body;
-
-                if (!roomId || !users || !Array.isArray(users)) {
-                    debugLog('API /add-users: Invalid request body', req.body);
-                    return res.status(400).json({ error: 'Invalid request body' });
-                }
-
-                // 1. Join các socket của user vào room
-                ioInstance.in(users).socketsJoin(roomId);
-
-                // 2. Gửi sự kiện 'added_to_room' TỚI CÁC USER ĐÓ
-                // (Gửi tới phòng cá nhân của họ)
-                ioInstance.to(users).emit('added_to_room', {
-                    roomId: roomId,
-                    roomName: roomName || 'New Room'
-                });
-
-                debugLog(`API /add-users: Successfully added users ${users} to room ${roomId}`);
-                res.json({ success: true, joined: users, room: roomId });
-
-            } catch (error) {
-                debugLog('API /add-users: Error:', error.message);
-                res.status(500).json({ error: 'Internal server error' });
-            }
-        });
-
         // --- Socket.IO handlers ---
         ioInstance.on('connection', (socket) => {
             debugLog(`longlh| Client ${socket.id} connected from ${socket.handshake.address}`);
@@ -204,6 +175,23 @@ initRedis().then((ioInstance) => {
                     }
                 });
 
+                socket.on('addUsersToRoom', (data) => {
+                    if (!data.roomId) return;
+                    const roomId = `group:${data.roomId}`;
+
+                    const messagePayload = {
+                        ...data,
+                        roomId,
+                        createdTime: Date.now()
+                    };
+
+                    ioInstance.in(data.users).socketsJoin(roomId);
+
+                    ioInstance.to(roomId).emit('addUsersToRoom');
+
+                    debugLog(`API /add-users: Successfully added users ${users} to room ${roomId}`);
+                });
+
                 socket.on('privateMsg', async (data) => {
                     const senderId = socket.handshake.auth.userId;
                     if (!data.roomId) return;
@@ -217,9 +205,24 @@ initRedis().then((ioInstance) => {
                     };
 
                     ioInstance.to(roomId).emit('newMsg', messagePayload);
-                    // ioInstance.to(senderId.toString()).emit('newMsg', messagePayload);
-                    //recipientId này là roomId luôn
                     debugLog(`longlh | send msg '${data.content}' from ${senderId} type:private to room '${roomId}'`);
+                });
+
+
+                socket.on('roomMsg', async (data) => {
+                    const senderId = socket.handshake.auth.userId;
+                    if (!data.roomId) return;
+                    const roomId = `group:${data.roomId}`;
+
+                    const messagePayload = {
+                        ...data,
+                        senderId,
+                        roomId,
+                        createdTime: Date.now()
+                    };
+
+                    ioInstance.to(roomId).emit('newMsg', messagePayload);
+                    debugLog(`longlh | send msg '${data.content}' from ${senderId} type:ROOM to room '${roomId}'`);
                 });
 
                 socket.on('addLabel', async (data) => {
@@ -254,7 +257,7 @@ initRedis().then((ioInstance) => {
                     debugLog(`longlh | delete msg '${data.msgId}' from ${senderId} type:private to room '${roomId}'`);
                 });
 
-                socket.on('typing', async (data) => {
+                socket.on('userTyping', async (data) => {
                     const senderId = socket.handshake.auth.userId;
                     if (!data.roomId) return;
                     const roomId = `group:${data.roomId}`;
@@ -266,10 +269,10 @@ initRedis().then((ioInstance) => {
                         createdTime: Date.now()
                     };
 
-                    ioInstance.to(roomId).emit('typing', messagePayload);
+                    socket.to(roomId).emit('userTyping', messagePayload);
                     debugLog(`longlh | ${data.total} typing msg '${data.msgId}' sender ${senderId} included type:private to room '${roomId}'`);
                 });
-                socket.on('stopTyping', async (data) => {
+                socket.on('userStopTyping', async (data) => {
                     const senderId = socket.handshake.auth.userId;
                     if (!data.roomId) return;
                     const roomId = `group:${data.roomId}`;
@@ -281,7 +284,7 @@ initRedis().then((ioInstance) => {
                         createdTime: Date.now()
                     };
 
-                    ioInstance.to(roomId).emit('stopTyping', messagePayload);
+                    socket.to(roomId).emit('userStopTyping', messagePayload);
                     debugLog(`longlh | ${data.total} typing msg '${data.msgId}' sender ${senderId} included type:private to room '${roomId}'`);
                 });
                 socket.on('deleteMulti', async (data) => {
@@ -321,6 +324,7 @@ initRedis().then((ioInstance) => {
 
                     const messagePayload = {
                         ...data,
+                        //
                         senderId,
                         roomId,
                         createdTime: Date.now()
@@ -376,7 +380,7 @@ initRedis().then((ioInstance) => {
             }
 
             socket.on('disconnect', () => {
-                debugLog(`Detect client disconnected: ${socket.id}`);
+                debugLog(`Detect client disconnected: ${socket.id} || longlh debug ${JSON.stringify(socket) || []}`);
             });
         });
 
