@@ -225,11 +225,11 @@ async function processAndBroadcast(socket, ioInstance, eventName, data, options 
     }
 
     if (options.ignoreSender) {
-        ioInstance.to(fullRoomId).emit(eventName, payload);
+        socket.to(fullRoomId).emit(eventName, payload);
     } else if (options.senderOnly) {
         socket.emit(eventName, payload);
     } else {
-        socket.to(fullRoomId).emit(eventName, payload);
+        ioInstance.to(fullRoomId).emit(eventName, payload);
     }
 
     if (options.notifyOutsiders && data.allowedUserIds) {
