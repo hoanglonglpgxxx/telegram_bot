@@ -194,21 +194,6 @@ async function getJson(params = {}, timeout = 2000) {
     }
 }
 
-/**
- * Xử lý và phát tán (process and broadcast) một sự kiện chat lên room tương ứng.
- *
- * Tham số:
- * @param {Socket} socket - socket của client gửi sự kiện
- * @param {Server} ioInstance - đối tượng Socket.IO server (io)
- * @param {string} eventName - tên sự kiện sẽ phát trong room (ví dụ 'newMsg')
- * @param {object} data - payload gốc từ client; phải chứa data.roomId (cần thiết)
- * @param {object} options - tuỳ chọn hành vi:
- *   - fetchRoomData: boolean — nếu true sẽ gọi API để lấy thông tin room và gắn vào payload.roomData
- *   - notifyOutsiders: boolean — nếu true sẽ gửi sự kiện riêng tới các user chưa join room
- *   - outsiderEventName: string — tên event dùng để thông báo outsider (mặc định 'roomUpdated')
- *   - ignoreSender: boolean — nếu true sẽ broadcast tới room nhưng vẫn bao gồm sender (khi cần)
- *   - senderOnly: boolean — nếu true chỉ gửi lại payload cho người gửi
- */
 async function processAndBroadcast(socket, ioInstance, eventName, data, options = {}) {
     const userId = socket.handshake.auth.userId;
     const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
@@ -239,15 +224,13 @@ async function processAndBroadcast(socket, ioInstance, eventName, data, options 
         payload.roomData = roomData;
     }
 
-    ioInstance.to(fullRoomId).emit(eventName, payload);
     if (options.ignoreSender) {
-        ioInstance.to(fullRoomId).emit(eventName, payload);
+        socket.to(fullRoomId).emit(eventName, payload);
     } else if (options.senderOnly) {
         socket.emit(eventName, payload);
     } else {
-        socket.to(fullRoomId).emit(eventName, payload);
+        ioInstance.to(fullRoomId).emit(eventName, payload);
     }
-
 
     if (options.notifyOutsiders && data.allowedUserIds) {
         const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.allowedUserIds);
@@ -324,7 +307,8 @@ initRedis().then((ioInstance) => {
                     fetchRoomData: true,
                     notifyOutsiders: true,
                     outsiderEventName: 'roomUpdated',
-                    ignoreSender: false
+                    ignoreSender: false,
+                    senderOnly: false,
                 };
 
                 socket.on('privateMsg', async (data) => processAndBroadcast(socket, ioInstance, 'newMsg', data, sendMsgOptions));
@@ -359,7 +343,22 @@ initRedis().then((ioInstance) => {
                 }));
 
                 socket.on('reactMsg', (data) => processAndBroadcast(socket, ioInstance, 'reactMsg', data));
-                socket.on('muteRoom', (data) => processAndBroadcast(socket, ioInstance, 'muteRoom', data));
+
+                socket.on('muteRoom', (data) => processAndBroadcast(socket, ioInstance, 'muteRoom', data, {
+                    senderOnly: true
+                }));
+
+                socket.on('unmuteRoom', (data) => processAndBroadcast(socket, ioInstance, 'unmuteRoom', data, {
+                    senderOnly: true
+                }));
+
+                socket.on('pinRoom', (data) => processAndBroadcast(socket, ioInstance, 'pinRoom', data, {
+                    senderOnly: true
+                }));
+
+                socket.on('unPinRoom', (data) => processAndBroadcast(socket, ioInstance, 'unPinRoom', data, {
+                    senderOnly: true
+                }));
             } else {
                 socket.on('room', (room) => {
                     socket.room = room;
