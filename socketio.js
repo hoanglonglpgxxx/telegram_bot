@@ -258,7 +258,7 @@ initRedis().then((ioInstance) => {
                 socket.join(`user:${userId}`);
 
                 socket.on('joinRoom', async (data) => {
-                    const { roomId, allowedUserIds, blockedUserIds } = data;
+                    const { roomId, allowedUserIds } = data;
                     if (!roomId || !allowedUserIds.length) {
                         debugLog(`longlh JOINROOM | Missing params`);
                         return;
@@ -266,7 +266,6 @@ initRedis().then((ioInstance) => {
                     //check userId có được allow, k bị block, chưa join room
                     const currentUsers = await getCurrentUsersInRoom(roomId);
                     if (allowedUserIds.includes(userId)
-                        && !blockedUserIds.includes(userId)
                         && !currentUsers.includes(userId)) {
                         socket.join(roomId);
 
@@ -277,7 +276,7 @@ initRedis().then((ioInstance) => {
                             });
                         }
 
-                        debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${roomId} || currentUserInRoom: ${currentUsers} || allowedList: ${allowedUserIds} || blockedList: ${blockedUserIds} || joinedRoom: ${joinedRooms} || after remove Rooms: ${Array.from(socket.rooms).filter(room => room !== socket.id)}`);
+                        debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${roomId} || currentUserInRoom: ${currentUsers} || allowedList: ${allowedUserIds} || joinedRoom: ${joinedRooms} || after remove Rooms: ${Array.from(socket.rooms).filter(room => room !== socket.id)}`);
                     } else if (currentUsers.includes(userId)) {
                         debugLog(clientIp, `longlh | User ${userId} is in room ${roomId} already`);
                     }
