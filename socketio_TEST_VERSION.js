@@ -89,7 +89,8 @@ try {
 
 // --- Socket.IO và Redis setup ---
 let io; // Khai báo io ở phạm vi global
-
+let pubClient;
+let subClient;
 async function initRedis() {
     try {
         const redisUrl = `redis://default:${config.redisPassword}@${config.redisHost}:${config.redisPort}`;
@@ -100,8 +101,8 @@ async function initRedis() {
                 keepAlive: 60000 // Gửi gói tin keep-alive mỗi 60 giây (60000ms)
             }
         };
-        const pubClient = createClient(clientOptions);
-        const subClient = pubClient.duplicate();
+        pubClient = createClient(clientOptions);
+        subClient = pubClient.duplicate();
 
         const PING_INTERVAL_MS = 240000; // 4 phút
         setInterval(async () => {
@@ -194,58 +195,121 @@ async function getJson(params = {}, timeout = 2000) {
     }
 }
 
-async function processAndBroadcast(socket, ioInstance, eventName, data, options = {}) {
-    const userId = socket.handshake.auth.userId;
-    const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
-
-    if (!data.roomId) {
-        debugLog(clientIp, `Event '${eventName}' dropped: No roomId provided.`);
-        return;
-    }
-
-    const fullRoomId = `group:${data.roomId}`;
-    let roomData = {};
-
-    if (options.fetchRoomData) {
-        try {
-            roomData = await getJson({ id: data.roomId });
-        } catch (e) {
-            debugLog(clientIp, `GET ROOM DATA FAILED | ${e.message}`);
-        }
-    }
-
-    let payload = {
-        ...data,
-        senderId: userId,
-        roomId: fullRoomId,
-        createdTime: Date.now()
-    };
-    if (Object.keys(roomData).length) {
-        payload.roomData = roomData;
-    }
-
-    if (options.ignoreSender) {
-        socket.to(fullRoomId).emit(eventName, payload);
-    } else if (options.senderOnly) {
-        socket.emit(eventName, payload);
-    } else {
-        ioInstance.to(fullRoomId).emit(eventName, payload);
-    }
-
-    if (options.notifyOutsiders && data.allowedUserIds) {
-        const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.allowedUserIds);
-
-        const outsiderEvent = options.outsiderEventName || 'roomUpdated';
-        payload['eventType'] = 'private';
-        notJoinedRoomUsers.forEach(user => {
-            ioInstance.to(`user:${user}`).emit(outsiderEvent, payload);
-        });
-    }
-
-    debugLog(clientIp, `Processed and broadcasted '${eventName}' from ${userId} to room '${fullRoomId}'`);
-}
 // --- Khởi tạo Redis và start server sau khi kết nối xong ---
 initRedis().then((ioInstance) => {
+
+    async function handleTypingState(payload, eventName) {
+        const typingKey = `typing:${payload.roomId}`;
+        const userInfoKey = `userinfo:${payload.roomId}`;
+
+        const multi = pubClient.multi();
+
+        if (eventName === 'userTyping') {
+            const userDetails = JSON.stringify({
+                id: payload.senderId,
+                name: payload.senderName
+            });
+            // add all command vào pipeline
+            multi.sAdd(typingKey, payload.senderId);
+            multi.expire(typingKey, 1);
+            multi.hSet(userInfoKey, payload.senderId, userDetails);
+            multi.expire(userInfoKey, 1);
+        } else if (eventName === 'userStopTyping') {
+            multi.sRem(typingKey, payload.senderId);
+        }
+
+        // gửi all command đến redis 1 lần
+        await multi.exec();
+
+        const typingUserIds = await pubClient.sMembers(typingKey);
+
+        let typingUsersWithDetails = [];
+        if (typingUserIds.length > 0) {
+            const userDetailsList = await pubClient.hmGet(userInfoKey, typingUserIds);
+            typingUsersWithDetails = userDetailsList
+                .filter(details => details)
+                .map(details => JSON.parse(details));
+        }
+
+        payload.typingUsers = typingUsersWithDetails;
+
+        debugLog(`Processed '${eventName}' with typing users are '${JSON.stringify(payload.typingUsers) || []}'`);
+        return payload;
+    }
+
+
+    /**
+     * Xử lý và broadcast event tới room tương ứng.
+     *
+     *  @param {Socket} socket - socket của client gửi sự kiện
+     *  @param {Server} ioInstance - instance của Socket.IO server
+     *  @param {string} eventName - tên event sẽ phát (ví dụ: 'newMsg')
+     *  @param {object} data - payload gốc từ client; bắt buộc có data.roomId
+     *  @param {object} options - tuỳ chọn:
+     *    - fetchRoomData: boolean => gọi API lấy room data
+     *    - notifyOutsiders: boolean => gửi sự kiện tới user chưa join room (user:<id>)
+     *    - outsiderEventName: string => tên event cho outsiders (mặc định 'roomUpdated')
+     *    - ignoreSender: boolean => broadcast tới room nhưng vẫn bao gồm sender
+     *    - senderOnly: boolean => chỉ gửi lại payload cho socket gửi
+     *    - beforeEmit: function => callback async để chỉnh sửa payload trước khi emit
+     *
+     */
+    async function processAndBroadcast(socket, ioInstance, eventName, data, options = {}) {
+        const userId = socket.handshake.auth.userId;
+        const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+
+        if (!data.roomId) {
+            debugLog(clientIp, `Event '${eventName}' dropped: No roomId provided.`);
+            return;
+        }
+
+        const fullRoomId = `group:${data.roomId}`;
+        let roomData = {};
+
+        if (options.fetchRoomData) {
+            try {
+                roomData = await getJson({ id: data.roomId });
+            } catch (e) {
+                debugLog(clientIp, `GET ROOM DATA FAILED | ${e.message}`);
+            }
+        }
+
+        let payload = {
+            ...data,
+            senderId: userId,
+            roomId: fullRoomId,
+            createdTime: Date.now()
+        };
+
+        if (options.beforeEmit && typeof options.beforeEmit === 'function') {
+            payload = await options.beforeEmit(payload, eventName);
+        }
+
+        if (Object.keys(roomData).length) {
+            payload.roomData = roomData;
+        }
+
+        if (options.ignoreSender) {
+            socket.to(fullRoomId).emit(eventName, payload);
+        } else if (options.senderOnly) {
+            socket.emit(eventName, payload);
+        } else {
+            ioInstance.to(fullRoomId).emit(eventName, payload);
+        }
+
+        if (options.notifyOutsiders && data.allowedUserIds) {
+            const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.allowedUserIds);
+
+            const outsiderEvent = options.outsiderEventName || 'roomUpdated';
+            payload['eventType'] = 'private';
+            notJoinedRoomUsers.forEach(user => {
+                ioInstance.to(`user:${user}`).emit(outsiderEvent, payload);
+            });
+        }
+
+        debugLog(clientIp, `Processed and broadcasted '${eventName}' from ${userId} to room '${fullRoomId}'`);
+    }
+
     if (ioInstance) {
         // --- Socket.IO handlers ---
         ioInstance.on('connection', (socket) => {
@@ -258,7 +322,7 @@ initRedis().then((ioInstance) => {
                 socket.join(`user:${userId}`);
 
                 socket.on('joinRoom', async (data) => {
-                    const { roomId, allowedUserIds, blockedUserIds } = data;
+                    const { roomId, allowedUserIds } = data;
                     if (!roomId || !allowedUserIds.length) {
                         debugLog(`longlh JOINROOM | Missing params`);
                         return;
@@ -266,7 +330,6 @@ initRedis().then((ioInstance) => {
                     //check userId có được allow, k bị block, chưa join room
                     const currentUsers = await getCurrentUsersInRoom(roomId);
                     if (allowedUserIds.includes(userId)
-                        && !blockedUserIds.includes(userId)
                         && !currentUsers.includes(userId)) {
                         socket.join(roomId);
 
@@ -277,7 +340,7 @@ initRedis().then((ioInstance) => {
                             });
                         }
 
-                        debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${roomId} || currentUserInRoom: ${currentUsers} || allowedList: ${allowedUserIds} || blockedList: ${blockedUserIds} || joinedRoom: ${joinedRooms} || after remove Rooms: ${Array.from(socket.rooms).filter(room => room !== socket.id)}`);
+                        debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${roomId} || currentUserInRoom: ${currentUsers} || allowedList: ${allowedUserIds} || joinedRoom: ${joinedRooms} || after remove Rooms: ${Array.from(socket.rooms).filter(room => room !== socket.id)}`);
                     } else if (currentUsers.includes(userId)) {
                         debugLog(clientIp, `longlh | User ${userId} is in room ${roomId} already`);
                     }
@@ -309,6 +372,7 @@ initRedis().then((ioInstance) => {
                     outsiderEventName: 'roomUpdated',
                     ignoreSender: false,
                     senderOnly: false,
+                    beforeEmit: false,
                 };
 
                 socket.on('privateMsg', async (data) => processAndBroadcast(socket, ioInstance, 'newMsg', data, sendMsgOptions));
@@ -324,6 +388,7 @@ initRedis().then((ioInstance) => {
 
                 socket.on('userTyping', (data) => processAndBroadcast(socket, ioInstance, 'userTyping', data, {
                     ignoreSender: true,
+                    beforeEmit: handleTypingState,
                 }));
 
                 socket.on('userStopTyping', (data) => processAndBroadcast(socket, ioInstance, 'userStopTyping', data, {
@@ -340,6 +405,16 @@ initRedis().then((ioInstance) => {
                 socket.on('pinMsg', (data) => processAndBroadcast(socket, ioInstance, 'pinMsg', data, {
                     notifyOutsiders: true,
                     outsiderEventName: 'pinMsg'
+                }));
+
+                socket.on('changeRoomTitle', (data) => processAndBroadcast(socket, ioInstance, 'changeRoomTitle', data, {
+                    notifyOutsiders: true,
+                    outsiderEventName: 'changeRoomTitle'
+                }));
+
+                socket.on('changeRoomAvatar', (data) => processAndBroadcast(socket, ioInstance, 'changeRoomAvatar', data, {
+                    notifyOutsiders: true,
+                    outsiderEventName: 'changeRoomAvatar'
                 }));
 
                 socket.on('reactMsg', (data) => processAndBroadcast(socket, ioInstance, 'reactMsg', data));
