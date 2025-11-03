@@ -306,8 +306,8 @@ initRedis().then((ioInstance) => {
 
                 socket.on('joinRoom', async (data) => {
                     const { roomId, allowedUserIds } = data;
-                    if (!roomId || !allowedUserIds.length) {
-                        debugLog(`longlh JOINROOM | Missing params`);
+                    if (!roomId || !Array.isArray(allowedUserIds)) {
+                        debugLog(`longlh JOINROOM | Missing params (roomId or allowedUserIds is invalid)`);
                         return;
                     }
                     //check userId có được allow, k bị block, chưa join room
@@ -328,7 +328,7 @@ initRedis().then((ioInstance) => {
                         debugLog(clientIp, `longlh | User ${userId} is in room ${roomId} already`);
                     }
                     else {
-                        debugLog(clientIp, `longlh | User ${userId} was blocked or not in by ${roomId}`);
+                        debugLog(clientIp, `longlh | User ${userId} was blocked or not in by ${roomId} with allowedUserIds ${allowedUserIds}`);
                     }
                 });
 
