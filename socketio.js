@@ -53,6 +53,7 @@ const config = {
     // Lấy từ biến môi trường, nếu không tồn tại thì dùng đường dẫn hardcode cũ làm mặc định
     sslKey: process.env.SSL_KEY_PATH || "",
     sslCert: process.env.SSL_CERT_PATH || "",
+    secretKey: process.env.SECRET_KEY_PATH || "",
 
     // PORT (Giữ nguyên)
     port: process.env.PORT || 0
@@ -85,6 +86,14 @@ try {
 } catch (err) {
     debugLog("SSL not found or invalid, fallback to HTTP:", err.message);
     server = http.createServer(app);
+}
+
+let APP_SECRET_KEY = '';
+try {
+    APP_SECRET_KEY = fs.readFileSync(config.secretKey, 'utf8');
+    debugLog('Successfully loaded secret key.');
+} catch (err) {
+    debugLog('FATAL ERROR: Could not read secretKey.', err.message);
 }
 
 // --- Socket.IO và Redis setup ---
@@ -169,6 +178,7 @@ async function getUsersList(roomId, allowedUserIds) {
 
 async function getJson(params = {}, timeout = 2000) {
     let url = `http://localhost/api/Member/ChatRoom/select`;
+    // let url = `http://localhost/api/Extra/Chat/Account/ChatRoom/select`;
     const u = new URL(url);
     Object.entries(params).forEach(([k, v]) => u.searchParams.append(k, String(v)));
     const controller = new AbortController();
@@ -195,10 +205,35 @@ async function getJson(params = {}, timeout = 2000) {
     }
 }
 
+function checkRequestValidStatus(eventName, data) {
+    const SECRET_EVENTS = [
+        'newMsg',
+        'addLabel',
+        'deleteMsg',
+        'pinMsg',
+        'deleteMulti',
+        'editMsg',
+        'reactMsg',
+        'editRoom',
+        'changeRoomTitle',
+        'changeRoomAvatar',
+        'isBeingHandled',
+        'addUsersToRoom'];
+    let currentTimeStamp = Date.now(),
+        exceedTime = Math.abs(currentTimeStamp - data.lastUpdateTime) / 1000;
+
+    if (SECRET_EVENTS.includes(eventName) && data.secretKey == APP_SECRET_KEY && exceedTime <= 10) return true;
+    else if (!SECRET_EVENTS.includes(eventName)) return true;
+    else {
+        debugLog(source, `Event ${eventName} is blocked cause called from unauthorized source`);
+        return false;
+    }
+}
+
 // --- Khởi tạo Redis và start server sau khi kết nối xong ---
 initRedis().then((ioInstance) => {
 
-    async function handleTypingState(payload, eventName) {
+    /* async function handleTypingState(payload, eventName) {
         const typingKey = `typing:${payload.roomId}`;
         const userInfoKey = `userinfo:${payload.roomId}`;
 
@@ -235,7 +270,7 @@ initRedis().then((ioInstance) => {
 
         debugLog(`Processed '${eventName}' with typing users are '${JSON.stringify(payload.typingUsers) || []}'`);
         return payload;
-    }
+    } */
 
     async function processAndBroadcast(socket, ioInstance, eventName, data, options = {}) {
         const userId = socket.handshake.auth.userId;
@@ -245,6 +280,8 @@ initRedis().then((ioInstance) => {
             debugLog(clientIp, `Event '${eventName}' dropped: No roomId provided.`);
             return;
         }
+
+        // if (!checkRequestValidStatus(eventName, data)) return;
 
         const fullRoomId = `group:${data.roomId}`;
         let roomData = {};
@@ -284,7 +321,7 @@ initRedis().then((ioInstance) => {
             const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.allowedUserIds);
 
             const outsiderEvent = options.outsiderEventName || 'roomUpdated';
-            payload['eventType'] = 'private';
+            payload['eventType'] = 'private'; //cờ gắn riêng cho event bắn cho room dạng user:userId
             notJoinedRoomUsers.forEach(user => {
                 ioInstance.to(`user:${user}`).emit(outsiderEvent, payload);
             });
@@ -297,6 +334,22 @@ initRedis().then((ioInstance) => {
         // --- Socket.IO handlers ---
         ioInstance.on('connection', (socket) => {
             const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+            /* đoạn này để debug in ra socket
+            function circularReplacer() {
+                const seen = new WeakSet();
+                return (key, value) => {
+                    if (typeof value === "object" && value !== null) {
+                        if (seen.has(value)) {
+                            return; // Omit circular references
+                        }
+                        seen.add(value);
+                    }
+                    return value;
+                };
+            }
+
+            socket.parent = socket;
+            const jsonString = JSON.stringify(socket, circularReplacer()); */
             debugLog(clientIp, `longlh| Client ${socket.id} connected`);
 
             const userId = socket.handshake.auth.userId;
@@ -310,6 +363,7 @@ initRedis().then((ioInstance) => {
                         debugLog(`longlh JOINROOM | Missing params (roomId or allowedUserIds is invalid)`);
                         return;
                     }
+
                     //check userId có được allow, k bị block, chưa join room
                     const currentUsers = await getCurrentUsersInRoom(roomId);
                     if (allowedUserIds.includes(userId)
@@ -324,6 +378,13 @@ initRedis().then((ioInstance) => {
                         }
 
                         debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${roomId} || currentUserInRoom: ${currentUsers} || allowedList: ${allowedUserIds} || joinedRoom: ${joinedRooms} || after remove Rooms: ${Array.from(socket.rooms).filter(room => room !== socket.id)}`);
+                        /*  //cần check nếu là admin ở đây, lấy từ select room
+ 
+                         let admins = [];
+                         if (admins.includes(userId)) {
+                             debugLog(clientIp, `longlh An admin has joined the room ${roomId}`);
+                             ioInstance.to(roomId).emit('adminJoined', {});
+                         } */
                     } else if (currentUsers.includes(userId)) {
                         debugLog(clientIp, `longlh | User ${userId} is in room ${roomId} already`);
                     }
@@ -358,9 +419,7 @@ initRedis().then((ioInstance) => {
                     beforeEmit: false,
                 };
 
-                socket.on('privateMsg', async (data) => processAndBroadcast(socket, ioInstance, 'newMsg', data, sendMsgOptions));
-
-                socket.on('roomMsg', async (data) => processAndBroadcast(socket, ioInstance, 'newMsg', data, sendMsgOptions));
+                socket.on('newMsg', async (data) => processAndBroadcast(socket, ioInstance, 'newMsg', data, sendMsgOptions));
 
                 socket.on('addLabel', (data) => processAndBroadcast(socket, ioInstance, 'addLabel', data));
 
@@ -371,7 +430,7 @@ initRedis().then((ioInstance) => {
 
                 socket.on('userTyping', (data) => processAndBroadcast(socket, ioInstance, 'userTyping', data, {
                     ignoreSender: true,
-                    beforeEmit: handleTypingState,
+                    // beforeEmit: handleTypingState,
                 }));
 
                 socket.on('userStopTyping', (data) => processAndBroadcast(socket, ioInstance, 'userStopTyping', data, {
