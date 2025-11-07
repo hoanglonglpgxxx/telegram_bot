@@ -168,9 +168,9 @@ async function getCurrentUsersInRoom(roomName) {
     return userIds;
 }
 
-async function getUsersList(roomId, allowedUserIds) {
+async function getUsersList(roomId, memberIds) {
     const currentUsers = await getCurrentUsersInRoom(roomId);
-    let notJoinedRoomUsers = allowedUserIds.filter(e => {
+    let notJoinedRoomUsers = memberIds.filter(e => {
         if (!currentUsers.includes(e)) return e;
     });
     return { currentUsers, notJoinedRoomUsers };
@@ -317,8 +317,8 @@ initRedis().then((ioInstance) => {
             ioInstance.to(fullRoomId).emit(eventName, payload);
         }
 
-        if (options.notifyOutsiders && data.allowedUserIds) {
-            const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.allowedUserIds);
+        if (options.notifyOutsiders && data.memberIds) {
+            const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.memberIds);
 
             const outsiderEvent = options.outsiderEventName || 'roomUpdated';
             payload['eventType'] = 'private'; //cờ gắn riêng cho event bắn cho room dạng user:userId
@@ -358,15 +358,15 @@ initRedis().then((ioInstance) => {
                 socket.join(`user:${userId}`);
 
                 socket.on('joinRoom', async (data) => {
-                    const { roomId, allowedUserIds } = data;
-                    if (!roomId || !Array.isArray(allowedUserIds)) {
-                        debugLog(`longlh JOINROOM | Missing params (roomId or allowedUserIds is invalid)`);
+                    const { roomId, memberIds } = data;
+                    if (!roomId || !Array.isArray(memberIds)) {
+                        debugLog(`longlh JOINROOM | Missing params (roomId or memberIds is invalid)`);
                         return;
                     }
 
                     //check userId có được allow, k bị block, chưa join room
                     const currentUsers = await getCurrentUsersInRoom(roomId);
-                    if (allowedUserIds.includes(userId)
+                    if (memberIds.includes(userId)
                         && !currentUsers.includes(userId)) {
                         socket.join(roomId);
 
@@ -377,7 +377,7 @@ initRedis().then((ioInstance) => {
                             });
                         }
 
-                        debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${roomId} || currentUserInRoom: ${currentUsers} || allowedList: ${allowedUserIds} || joinedRoom: ${joinedRooms} || after remove Rooms: ${Array.from(socket.rooms).filter(room => room !== socket.id)}`);
+                        debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${roomId} || currentUserInRoom: ${currentUsers} || memberIds: ${memberIds} || joinedRoom: ${joinedRooms} || after remove Rooms: ${Array.from(socket.rooms).filter(room => room !== socket.id)}`);
                         /*  //cần check nếu là admin ở đây, lấy từ select room
  
                          let admins = [];
@@ -389,29 +389,12 @@ initRedis().then((ioInstance) => {
                         debugLog(clientIp, `longlh | User ${userId} is in room ${roomId} already`);
                     }
                     else {
-                        debugLog(clientIp, `longlh | User ${userId} was blocked or not in by ${roomId} with allowedUserIds ${allowedUserIds}`);
+                        debugLog(clientIp, `longlh | User ${userId} was blocked or not in by ${roomId} with memberIds ${memberIds}`);
                     }
                 });
 
-                socket.on('addUsersToRoom', (data) => {
-                    if (!data.roomId) return;
-                    const roomId = `group:${data.roomId}`;
-
-                    const messagePayload = {
-                        ...data,
-                        roomId,
-                        createdTime: Date.now()
-                    };
-
-                    ioInstance.in(data.users).socketsJoin(roomId);
-
-                    ioInstance.to(roomId).emit('addUsersToRoom');
-
-                    debugLog(clientIp, `API /add-users: Successfully added users ${users} to room ${roomId}`);
-                });
-
                 const sendMsgOptions = {
-                    fetchRoomData: true,
+                    fetchRoomData: false,
                     notifyOutsiders: true,
                     outsiderEventName: 'roomUpdated',
                     ignoreSender: false,
@@ -421,11 +404,16 @@ initRedis().then((ioInstance) => {
 
                 socket.on('newMsg', async (data) => processAndBroadcast(socket, ioInstance, 'newMsg', data, sendMsgOptions));
 
-                socket.on('addLabel', (data) => processAndBroadcast(socket, ioInstance, 'addLabel', data));
+                socket.on('addTag', (data) => processAndBroadcast(socket, ioInstance, 'addTag', data));
 
                 socket.on('deleteMsg', (data) => processAndBroadcast(socket, ioInstance, 'deleteMsg', data, {
                     notifyOutsiders: true,
                     outsiderEventName: 'deleteMsg'
+                }));
+
+                socket.on('pinMsg', (data) => processAndBroadcast(socket, ioInstance, 'pinMsg', data, {
+                    notifyOutsiders: true,
+                    outsiderEventName: 'pinMsg'
                 }));
 
                 socket.on('userTyping', (data) => processAndBroadcast(socket, ioInstance, 'userTyping', data, {
@@ -437,43 +425,23 @@ initRedis().then((ioInstance) => {
                     ignoreSender: true,
                 }));
 
-                socket.on('deleteMulti', (data) => processAndBroadcast(socket, ioInstance, 'deleteMulti', data));
-
                 socket.on('editMsg', (data) => processAndBroadcast(socket, ioInstance, 'editMsg', data, {
                     notifyOutsiders: true,
                     outsiderEventName: 'editMsg'
                 }));
 
-                socket.on('pinMsg', (data) => processAndBroadcast(socket, ioInstance, 'pinMsg', data, {
-                    notifyOutsiders: true,
-                    outsiderEventName: 'pinMsg'
-                }));
-
-                socket.on('changeRoomTitle', (data) => processAndBroadcast(socket, ioInstance, 'changeRoomTitle', data, {
-                    notifyOutsiders: true,
-                    outsiderEventName: 'changeRoomTitle'
-                }));
-
-                socket.on('changeRoomAvatar', (data) => processAndBroadcast(socket, ioInstance, 'changeRoomAvatar', data, {
-                    notifyOutsiders: true,
-                    outsiderEventName: 'changeRoomAvatar'
-                }));
-
                 socket.on('reactMsg', (data) => processAndBroadcast(socket, ioInstance, 'reactMsg', data));
-
-                socket.on('muteRoom', (data) => processAndBroadcast(socket, ioInstance, 'muteRoom', data, {
-                    senderOnly: true
-                }));
-
-                socket.on('unmuteRoom', (data) => processAndBroadcast(socket, ioInstance, 'unmuteRoom', data, {
-                    senderOnly: true
-                }));
 
                 socket.on('pinRoom', (data) => processAndBroadcast(socket, ioInstance, 'pinRoom', data, {
                     senderOnly: true
                 }));
 
-                socket.on('unPinRoom', (data) => processAndBroadcast(socket, ioInstance, 'unPinRoom', data, {
+                socket.on('editRoom', (data) => processAndBroadcast(socket, ioInstance, 'editRoom', data, {
+                    notifyOutsiders: true,
+                    outsiderEventName: 'editRoom'
+                }));
+
+                socket.on('notifyConfig', (data) => processAndBroadcast(socket, ioInstance, 'notifyConfig', data, {
                     senderOnly: true
                 }));
             } else {
