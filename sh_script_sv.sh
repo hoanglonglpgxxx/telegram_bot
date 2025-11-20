@@ -14,13 +14,15 @@ export PATH=/u01/colombo/usr/bin:/u01/colombo/www/colombo4/nodejs/node_modules/.
 FOREVER="/u01/colombo/www/colombo4/nodejs/node_modules/forever/bin/forever"
 NODEJS_APP="/u01/colombo/www/colombo4/nodejs/index.js"
 APP_ID="vsystem-chat-socketio"
-LOGFILE="/u01/colombo/www/crontab/log/vhv_cronjob_$APP_ID.log"
+# write all forever logs (forever internal log, stdout and stderr) to the same logfile
+LOGFILE="/u01/colombo/www/crontab/log/vhv_cronjob_zalo_script.log"
 
 echo "User colombo only!!!"
 
 case "$1" in
   start)
-    "$FOREVER" --uid "$APP_ID" -a -e "$LOGFILE" -o "$LOGFILE" --no-file start "$NODEJS_APP"
+    # Use -l to set forever's internal log file, -o for stdout and -e for stderr. -a to append.
+    "$FOREVER" --uid "$APP_ID" -a -l "$LOGFILE" -e "$LOGFILE" -o "$LOGFILE" --no-file start "$NODEJS_APP"
     echo "vsystem chat (by nodejs socket.io) started"
     echo "Check log at $LOGFILE"
     ;;
@@ -41,8 +43,8 @@ case "$1" in
     ;;
   restart)
     "$FOREVER" restart --no-file "$APP_ID" || {
-      # call restart with full params if restart fail
-      "$FOREVER" --uid "$APP_ID" -a -e "$LOGFILE" -o "$LOGFILE" --no-file start "$NODEJS_APP"
+      # call restart with full params if restart fail; include -l so forever internal log is the same
+      "$FOREVER" --uid "$APP_ID" -a -l "$LOGFILE" -e "$LOGFILE" -o "$LOGFILE" --no-file start "$NODEJS_APP"
     }
     echo "vsystem chat (by nodejs socket.io) restarted"
     ;;

@@ -35,6 +35,21 @@ async function isNonceUsed(pubClient, nonce) {
     return result === null;
 }
 
+function sortObject(obj) {
+    if (Array.isArray(obj)) {
+        return obj.map(sortObject);
+    }
+    if (obj !== null && typeof obj === 'object') {
+        return Object.keys(obj)
+            .sort()
+            .reduce((sorted, key) => {
+                sorted[key] = sortObject(obj[key]);
+                return sorted;
+            }, {});
+    }
+    return obj;
+}
+
 /**
  * Hàm xác minh chữ ký HMAC-SHA256.
  * @param {object} payload - Toàn bộ tin nhắn nhận được.
@@ -43,11 +58,23 @@ async function isNonceUsed(pubClient, nonce) {
  * @returns {boolean} Kết quả xác minh.
  */
 function verifyHMAC(payload, receivedSignature, secret) {
-    const dataToVerify = { ...payload };
-    delete dataToVerify.signature;
-    const canonicalString = canonicalizePayload(dataToVerify);
+    let dataToVerify;
+
+    if (typeof payload === 'string') {
+        dataToVerify = JSON.parse(payload);
+    } else {
+        dataToVerify = { ...payload };
+    }
+    debugLog('cur payload ', payload, receivedSignature, secret);
+    if (dataToVerify.signature) {
+        delete dataToVerify.signature;
+    }
+    const sortedData = sortObject(dataToVerify);
+    let canonicalString = JSON.stringify(sortedData);
+    canonicalString = canonicalString.replace(/\//g, '\\/');
     const expectedSignature = crypto.createHmac('sha256', secret).update(canonicalString).digest('hex');
     try {
+        debugLog('handled crypto', canonicalString, expectedSignature, crypto.timingSafeEqual(Buffer.from(receivedSignature, 'hex'), Buffer.from(expectedSignature, 'hex')));
         return crypto.timingSafeEqual(Buffer.from(receivedSignature, 'hex'), Buffer.from(expectedSignature, 'hex'));
     } catch (e) {
         debugLog("TimingSafeEqual failed:", e.message);
