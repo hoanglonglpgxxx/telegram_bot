@@ -135,24 +135,43 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                     eventType: eventType
                 };
 
+                // ---------------------------------------------------------
+                // 1. PHÁT SỰ KIỆN CHÍNH (Vào Room Chat)
+                // ---------------------------------------------------------
+                // Ví dụ: eventType là 'newMsg' -> Ai trong room sẽ nhận được 'newMsg'
                 io.to(fullRoomId).emit(eventType, finalPayload);
                 debugLog(`Broadcasted '${eventType}' to room '${fullRoomId}'`);
 
+
+                // ---------------------------------------------------------
+                // 2. PHÁT SỰ KIỆN THÔNG BÁO (Logic thay thế roomUpdated cũ)
+                // ---------------------------------------------------------
+                // Chỉ xử lý khi payload có danh sách thành viên (PHP phải gửi kèm memberIds)
                 if (payload.memberIds && Array.isArray(payload.memberIds)) {
 
+                    // Xác định tên sự kiện thông báo. 
+                    // Nếu là 'newMsg' thì thông báo là 'roomUpdated'.
+                    // Nếu là 'deleteMsg' thì thông báo là 'deleteMsg' (tuỳ logic cũ của bạn)
                     let notifyEventName = 'roomUpdated';
 
+                    // Tùy chỉnh tên event phụ dựa trên event chính (giống logic cũ listeners.js)
                     if (eventType === 'deleteMsg') notifyEventName = 'deleteMsg';
                     if (eventType === 'pinMsg') notifyEventName = 'pinMsg';
                     if (eventType === 'editMsg') notifyEventName = 'editMsg';
 
+                    // Gửi đến kênh riêng của từNG thành viên
                     payload.memberIds.forEach(targetUserId => {
+                        // Gửi vào kênh user:ID
+                        // Client sẽ nhận được event 'roomUpdated' tại đây
                         io.to(`user:${targetUserId}`).emit(notifyEventName, finalPayload);
                     });
 
                     debugLog(`Notified outsiders via '${notifyEventName}' to ${payload.memberIds.length} users`);
                 }
 
+                // ---------------------------------------------------------
+                // 3. XỬ LÝ JOIN NGẦM (Như đã bàn ở câu trước)
+                // ---------------------------------------------------------
                 if (eventType === 'joinRoom' && payload.sender && payload.sender.id) {
                     io.in(`user:${payload.sender.id}`).socketsJoin(fullRoomId);
                 }
