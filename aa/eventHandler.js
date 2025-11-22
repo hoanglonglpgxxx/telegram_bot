@@ -120,6 +120,7 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
         }
 
         // --- 4. XỬ LÝ VÀ PHÁT SỰ KIỆN HỢP LỆ ---
+        // đang thiếu socketId emit từ php, đợi huongtd bắn lên
         debugLog(`Verified and processing event: ${eventType}, eventData: ${JSON.stringify(payload)}`);
         if (ALLOWED_EVENTS.includes(eventType)) {
             const { chatRoomId, senderId, ...rest } = payload;
@@ -135,11 +136,45 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                     eventType: eventType
                 };
 
+
+                if (eventType === 'joinRoom') {
+
+                    const switchRoomForSocket = (socket, newRoomId) => {
+                        for (const room of socket.rooms) {
+                            if (room.startsWith('group:') && room !== newRoomId) {
+                                socket.leave(room);
+                                debugLog(`[Auto-Switch] Socket ${socket.id} left ${room}`);
+                            }
+                        }
+                        socket.join(newRoomId);
+                        debugLog(`[Join] Socket ${socket.id} joined ${newRoomId}`);
+                    };
+
+                    if (payload.targetSocketId) {
+                        const targetSocket = io.sockets.sockets.get(payload.targetSocketId);
+                        if (targetSocket) {
+                            switchRoomForSocket(targetSocket, fullRoomId);
+                        }
+                    }
+
+
+                    else {
+                        if (payload.sender && payload.sender.id) {
+                            io.in(`user:${payload.sender.id}`).socketsJoin(fullRoomId);
+                        }
+                        if (payload.memberIds && Array.isArray(payload.memberIds)) {
+                            payload.memberIds.forEach(uid => {
+                                io.in(`user:${uid}`).socketsJoin(fullRoomId);
+                            });
+                        }
+                    }
+                }
+
                 io.to(fullRoomId).emit(eventType, finalPayload);
                 debugLog(`Broadcasted '${eventType}' to room '${fullRoomId}'`);
 
-                if (payload.memberIds && Array.isArray(payload.memberIds)) {
 
+                if (payload.memberIds && Array.isArray(payload.memberIds)) {
                     let notifyEventName = 'roomUpdated';
 
                     if (eventType === 'deleteMsg') notifyEventName = 'deleteMsg';
@@ -151,10 +186,6 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                     });
 
                     debugLog(`Notified outsiders via '${notifyEventName}' to ${payload.memberIds.length} users`);
-                }
-
-                if (eventType === 'joinRoom' && payload.sender && payload.sender.id) {
-                    io.in(`user:${payload.sender.id}`).socketsJoin(fullRoomId);
                 }
 
             } else {
