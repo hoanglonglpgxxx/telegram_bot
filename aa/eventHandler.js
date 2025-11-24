@@ -167,6 +167,9 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
             }
 
             const targetSocketId = socketId || payload.socketId;
+            if (!targetSocketId) {
+                debugLog('Missing params: socketId');
+            }
             if (chatRoomId) {
                 const fullRoomId = `group:${chatRoomId}`;
 
