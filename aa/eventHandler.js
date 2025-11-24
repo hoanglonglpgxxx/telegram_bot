@@ -5,7 +5,7 @@ const { debugLog } = require('./utils.js');
 const EVENT_CHAT_CHANNEL = 'vsystem_chat_event';
 const NONCE_TTL_SECONDS = 60;
 const MAX_TIME_DIFF_SECONDS = 60;
-const ALLOWED_EVENTS = ['newMsg', 'userTyping', 'userStopTyping', 'deleteMsg', 'pinMsg', 'editMsg', 'reactMsg', 'addTag', 'roomUpdated', 'notifyConfig', 'editRoom', 'pinRoom'];
+const ALLOWED_EVENTS = ['newMsg', 'userTyping', 'userStopTyping', 'deleteMsg', 'pinMsg', 'editMsg', 'reactMsg', 'addTag', 'roomUpdated', 'notifyConfig', 'editRoom', 'pinRoom', 'joinRoom'];
 /**
  * Hàm chuẩn hóa payload để tạo chuỗi dữ liệu ký.
  * @param {object} data - Dữ liệu đã được loại bỏ signature.
@@ -82,6 +82,36 @@ function verifyHMAC(payload, receivedSignature, secret) {
     }
 }
 
+function debugSocketInfo(socket) {
+    if (!socket) return;
+
+    const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+
+    console.log(`\n--- 🕵️ DEBUG SOCKET [${socket.id}] ---`);
+    console.log(`IP: ${clientIp}`);
+
+    // 1. Kiểm tra AUTH (Nơi chứa userId chuẩn của Socket.IO v4)
+    console.log(`👉 handshake.auth:`, JSON.stringify(socket.handshake.auth, null, 2));
+
+    // 2. Kiểm tra QUERY (Nếu client gửi qua URL ?userId=...)
+    console.log(`👉 handshake.query:`, JSON.stringify(socket.handshake.query, null, 2));
+
+    // 3. Kiểm tra ROOMS (Xem socket này đang ở đâu)
+    // Lưu ý: Phải dùng Array.from() vì nó là Set
+    console.log(`👉 rooms:`, JSON.stringify(Array.from(socket.rooms)));
+
+    // 4. Kiểm tra HEADERS (Nếu client gửi qua Header custom)
+    // In gọn lại để dễ nhìn
+    const h = socket.handshake.headers;
+    console.log(`👉 headers (chọn lọc):`, JSON.stringify({
+        'userid': h['userid'],       // Check header thường gặp
+        'user-id': h['user-id'],     // Check biến thể
+        'cookie': h['cookie'] ? 'Has Cookie' : 'No Cookie',
+        'user-agent': h['user-agent']
+    }, null, 2));
+    console.log(`------------------------------------------\n`);
+}
+
 
 /**
  * Khởi tạo việc lắng nghe kênh Redis riêng và xử lý logic bảo mật.
@@ -122,9 +152,21 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
         // --- 4. XỬ LÝ VÀ PHÁT SỰ KIỆN HỢP LỆ ---
         // đang thiếu socketId emit từ php, đợi huongtd bắn lên
         debugLog(`Verified and processing event: ${eventType}, eventData: ${JSON.stringify(payload)}`);
-        if (ALLOWED_EVENTS.includes(eventType)) {
-            const { chatRoomId, senderId, ...rest } = payload;
 
+        if (ALLOWED_EVENTS.includes(eventType)) {
+            const { chatRoomId, senderId, socketId, ...rest } = payload;
+
+            // Lấy tất cả socket từ mọi server thông qua Redis
+            const sockets = await io.fetchSockets();
+
+            for (const socket of sockets) {
+                debugLog(`full detail id: ${socket.id}, 
+                    auth: ${JSON.stringify(socket.handshake.auth)}, 
+                    rooms: ${JSON.stringify(Array.from(socket.rooms))}
+                `);
+            }
+
+            const targetSocketId = socketId || payload.socketId;
             if (chatRoomId) {
                 const fullRoomId = `group:${chatRoomId}`;
 
@@ -132,7 +174,6 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                     ...rest,
                     senderId: payload.senderId || 'system',
                     chatRoomId: fullRoomId,
-                    createdTime: Date.now(),
                     eventType: eventType
                 };
 
@@ -150,10 +191,12 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                         debugLog(`[Join] Socket ${socket.id} joined ${newRoomId}`);
                     };
 
-                    if (payload.targetSocketId) {
-                        const targetSocket = io.sockets.sockets.get(payload.targetSocketId);
+                    if (targetSocketId) {
+                        const targetSocket = io.sockets.sockets.get(targetSocketId);
                         if (targetSocket) {
                             switchRoomForSocket(targetSocket, fullRoomId);
+                        } else {
+                            debugLog(`[Warning] Socket ID ${targetSocketId} not found (User might have disconnected/refreshed).`);
                         }
                     }
 
