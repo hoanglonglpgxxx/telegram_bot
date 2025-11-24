@@ -161,7 +161,7 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
 
             for (const socket of sockets) {
                 debugLog(`full detail id: ${socket.id}, 
-                    auth: ${JSON.stringify(socket.handshake.auth)}, 
+                    auth: ${JSON.stringify(socket.data.userId)}, 
                     rooms: ${JSON.stringify(Array.from(socket.rooms))}
                 `);
             }

@@ -7,9 +7,25 @@ function registerHandlers(ioInstance) {
      * @returns {userIds} - Mảng các userId
      */
     async function getCurrentUsersInRoom(roomName) {
-        const sockets = await ioInstance.in(roomName).fetchSockets();
-        const userIds = sockets.map(socket => socket.handshake.auth.userId || '');
-        return userIds;
+        try {
+            const sockets = await Promise.race([
+                ioInstance.in(roomName).fetchSockets(),
+                new Promise((_, reject) =>
+                    setTimeout(() => reject(new Error('Redis fetch timeout')), 5000)
+                )
+            ]);
+
+            const userIds = sockets.map(socket => {
+                return (socket.handshake && socket.handshake.auth && socket.handshake.auth.userId)
+                    ? socket.handshake.auth.userId
+                    : '';
+            });
+            return userIds;
+
+        } catch (e) {
+            debugLog('NO_ADDR', `Skipping room check for ${roomName}: ${e.message}`);
+            return [];
+        }
     }
 
     /**
@@ -21,38 +37,10 @@ function registerHandlers(ioInstance) {
     */
     async function getUsersList(chatRoomId, memberIds) {
         const currentUsers = await getCurrentUsersInRoom(chatRoomId);
-        let notJoinedRoomUsers = memberIds.filter(e => {
-            if (!currentUsers.includes(e)) return e;
-        });
+        let notJoinedRoomUsers = memberIds.filter(e => !currentUsers.includes(e));
         return { currentUsers, notJoinedRoomUsers };
     }
 
-    /* async function getJson(params = {}, timeout = 2000) {
-        let url = `http://localhost/api/Member/ChatRoom/select`;
-        // let url = `http://localhost/api/Extra/Chat/Account/ChatRoom/select`;
-
-        const u = new URL(url);
-        Object.entries(params).forEach(([k, v]) => u.searchParams.append(k, String(v)));
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), timeout);
-
-        try {
-            const res = await fetch(u.toString(), {
-                method: 'GET',
-                headers: { 'Accept': 'application/json' },
-                signal: controller.signal
-            });
-            clearTimeout(id);
-            if (!res.ok) {
-                const text = await res.text().catch(() => '');
-                throw new Error(`HTTP ${res.status} ${res.statusText}: ${text}`);
-            }
-            return await res.json();
-        } catch (err) {
-            if (err.name === 'AbortError') throw new Error('Request timed out');
-            throw err;
-        }
-    } */
 
     /**
      * Xử lý payload do client gửi lên rồi broadcast tới room tương ứng.
@@ -63,97 +51,103 @@ function registerHandlers(ioInstance) {
      * @param {object} options - tuỳ chọn xử lý (ignoreSender, senderOnly, notifyOutsiders, beforeEmit...)
      */
     async function processAndBroadcast(socket, ioInstance, eventName, data, options = {}) {
-        const userId = socket.handshake.auth.userId;
-        const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+        try {
+            debugLog('processing...');
+            const userId = socket.handshake.auth.userId;
+            const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
 
-        if (!data.chatRoomId) {
-            debugLog(clientIp, `Event '${eventName}' dropped: No roomId provided.`);
-            return;
-        }
-
-        const fullRoomId = `group:${data.chatRoomId}`;
-        /* let roomData = {};
-
-        if (options.fetchRoomData) {
-            try {
-                roomData = await getJson({ id: data.chatRoomId });
-            } catch (e) {
-                debugLog(clientIp, `GET ROOM DATA FAILED | ${e.message}`);
+            if (!data.chatRoomId) {
+                debugLog(clientIp, `Event '${eventName}' dropped: No roomId provided.`);
+                return;
             }
-        } */
 
-        let payload = {
-            ...data,
-            senderId: userId,
-            chatRoomId: fullRoomId,
-            createdTime: Date.now()
-        };
+            const fullRoomId = `group:${data.chatRoomId}`;
 
-        if (options.beforeEmit && typeof options.beforeEmit === 'function') {
-            payload = await options.beforeEmit(payload, eventName);
-        }
+            let payload = {
+                ...data,
+                senderId: userId,
+                chatRoomId: fullRoomId,
+                createdTime: Date.now()
+            };
 
-        /* if (Object.keys(roomData).length) {
-            payload.roomData = roomData;
-        } */
+            if (options.beforeEmit && typeof options.beforeEmit === 'function') {
+                payload = await options.beforeEmit(payload, eventName);
+            }
 
-        if (!data.ignoreMultiTimes) {
-            if (options.ignoreSender) {
-                socket.to(fullRoomId).emit(eventName, payload);
-            } else if (options.senderOnly) {
-                socket.emit(eventName, payload);
+            if (!data.ignoreMultiTimes) {
+                if (options.ignoreSender) {
+                    socket.to(fullRoomId).emit(eventName, payload);
+                } else if (options.senderOnly) {
+                    socket.emit(eventName, payload);
+                } else {
+                    ioInstance.to(fullRoomId).emit(eventName, payload);
+                }
             } else {
-                ioInstance.to(fullRoomId).emit(eventName, payload);
+                if (options.senderOnly) {
+                    socket.emit(eventName, payload);
+                }
             }
-        } else {
-            if (options.senderOnly) {
-                socket.emit(eventName, payload);
+
+            if (options.notifyOutsiders && data.memberIds) {
+                try {
+                    const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.memberIds);
+                    const outsiderEvent = options.outsiderEventName || 'roomUpdated';
+                    payload['eventType'] = 'private';
+
+                    notJoinedRoomUsers.forEach(user => {
+                        ioInstance.to(`user:${user}`).emit(outsiderEvent, payload);
+                    });
+                } catch (err) {
+                    debugLog(clientIp, `Failed to notify outsiders: ${err.message}`);
+                }
             }
-        }
 
-        if (options.notifyOutsiders && data.memberIds) {
-            const { notJoinedRoomUsers } = await getUsersList(fullRoomId, data.memberIds);
-            debugLog(clientIp, `notJoinedRoomUsers users ${notJoinedRoomUsers}`);
-            const outsiderEvent = options.outsiderEventName || 'roomUpdated';
-            payload['eventType'] = 'private';
-            notJoinedRoomUsers.forEach(user => {
-                ioInstance.to(`user:${user}`).emit(outsiderEvent, payload);
-                debugLog(clientIp, `Emitted ${outsiderEvent} to room user:${user}`);
-            });
+            debugLog(clientIp, `Processed '${eventName}' from ${userId} to '${fullRoomId}' `);
+        } catch (err) {
+            debugLog('NO_ADDR', `CRITICAL ERROR in processAndBroadcast: ${err.message}`);
         }
-
-        debugLog(clientIp, `Processed and broadcasted '${eventName}' from ${userId} to room '${fullRoomId}'`);
     }
 
     ioInstance.on('connection', (socket) => {
         const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
-        debugLog(clientIp, `longlh| Client ${socket.id} connected`);
+        debugLog(clientIp, ` Client ${socket.id} connected`);
 
         const userId = socket.handshake.auth.userId;
 
         socket.join(`user:${userId}`);
+        if (userId && userId !== 'undefined') {
+            // --- QUAN TRỌNG: LƯU VÀO DATA ĐỂ FETCH ĐƯỢC ---
+            socket.data.userId = userId;
+            // ----------------------------------------------
+        }
 
         socket.on('joinRoom', async (data) => {
-            const { chatRoomId, memberIds } = data;
-            if (!chatRoomId || !Array.isArray(memberIds)) {
-                debugLog(clientIp, `longlh JOINROOM | Missing params (roomId or memberIds is invalid)`);
-                return;
-            }
-
-            const currentUsers = await getCurrentUsersInRoom(chatRoomId);
-            if (memberIds.includes(userId) && !currentUsers.includes(userId)) {
-                socket.join(chatRoomId);
-                const joinedRooms = Array.from(socket.rooms).filter(room => room !== socket.id);
-                if (joinedRooms.length) {
-                    joinedRooms.forEach(curRoomName => {
-                        if (curRoomName.includes('group') && curRoomName !== chatRoomId) socket.leave(curRoomName);
-                    });
+            try {
+                const { chatRoomId, memberIds } = data;
+                if (!chatRoomId || !Array.isArray(memberIds)) {
+                    debugLog(clientIp, `longlh JOINROOM | Missing params`);
+                    return;
                 }
-                debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${chatRoomId}`);
-            } else if (currentUsers.includes(userId)) {
-                debugLog(clientIp, `longlh | User ${userId} is in room ${chatRoomId} already`);
-            } else {
-                debugLog(clientIp, `longlh | User ${userId} was blocked or not in by ${chatRoomId} with memberIds ${memberIds}`);
+
+                if (memberIds.includes(userId)) {
+                    socket.join(chatRoomId);
+                    const joinedRooms = Array.from(socket.rooms).filter(room => room !== socket.id);
+                    if (joinedRooms.length) {
+                        joinedRooms.forEach(curRoomName => {
+                            if (curRoomName.includes('group') && curRoomName !== chatRoomId) socket.leave(curRoomName);
+                        });
+                    }
+                    debugLog(clientIp, `longlh JOINROOM | User ${userId} joined ${chatRoomId}`);
+                } else {
+                    const currentUsers = await getCurrentUsersInRoom(chatRoomId);
+                    if (currentUsers.includes(userId)) {
+                        debugLog(clientIp, `longlh | User ${userId} is in room ${chatRoomId} already`);
+                    } else {
+                        debugLog(clientIp, `longlh | User ${userId} Access Denied to ${chatRoomId}`);
+                    }
+                }
+            } catch (err) {
+                debugLog(clientIp, `longlh JOINROOM ERROR | ${err.message}`);
             }
         });
 
