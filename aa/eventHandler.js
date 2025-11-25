@@ -65,7 +65,6 @@ function verifyHMAC(payload, receivedSignature, secret) {
     } else {
         dataToVerify = { ...payload };
     }
-    debugLog('cur payload ', payload, receivedSignature, secret);
     if (dataToVerify.signature) {
         delete dataToVerify.signature;
     }
@@ -74,44 +73,12 @@ function verifyHMAC(payload, receivedSignature, secret) {
     canonicalString = canonicalString.replace(/\//g, '\\/');
     const expectedSignature = crypto.createHmac('sha256', secret).update(canonicalString).digest('hex');
     try {
-        debugLog('handled crypto', canonicalString, expectedSignature, crypto.timingSafeEqual(Buffer.from(receivedSignature, 'hex'), Buffer.from(expectedSignature, 'hex')));
         return crypto.timingSafeEqual(Buffer.from(receivedSignature, 'hex'), Buffer.from(expectedSignature, 'hex'));
     } catch (e) {
         debugLog("TimingSafeEqual failed:", e.message);
         return false;
     }
 }
-
-function debugSocketInfo(socket) {
-    if (!socket) return;
-
-    const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
-
-    console.log(`\n--- 🕵️ DEBUG SOCKET [${socket.id}] ---`);
-    console.log(`IP: ${clientIp}`);
-
-    // 1. Kiểm tra AUTH (Nơi chứa userId chuẩn của Socket.IO v4)
-    console.log(`👉 handshake.auth:`, JSON.stringify(socket.handshake.auth, null, 2));
-
-    // 2. Kiểm tra QUERY (Nếu client gửi qua URL ?userId=...)
-    console.log(`👉 handshake.query:`, JSON.stringify(socket.handshake.query, null, 2));
-
-    // 3. Kiểm tra ROOMS (Xem socket này đang ở đâu)
-    // Lưu ý: Phải dùng Array.from() vì nó là Set
-    console.log(`👉 rooms:`, JSON.stringify(Array.from(socket.rooms)));
-
-    // 4. Kiểm tra HEADERS (Nếu client gửi qua Header custom)
-    // In gọn lại để dễ nhìn
-    const h = socket.handshake.headers;
-    console.log(`👉 headers (chọn lọc):`, JSON.stringify({
-        'userid': h['userid'],       // Check header thường gặp
-        'user-id': h['user-id'],     // Check biến thể
-        'cookie': h['cookie'] ? 'Has Cookie' : 'No Cookie',
-        'user-agent': h['user-agent']
-    }, null, 2));
-    console.log(`------------------------------------------\n`);
-}
-
 
 /**
  * Khởi tạo việc lắng nghe kênh Redis riêng và xử lý logic bảo mật.
@@ -159,12 +126,12 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
             // Lấy tất cả socket từ mọi server thông qua Redis
             const sockets = await io.fetchSockets();
 
-            for (const socket of sockets) {
-                debugLog(`full detail id: ${socket.id}, 
-                    auth: ${JSON.stringify(socket.data.userId)}, 
-                    rooms: ${JSON.stringify(Array.from(socket.rooms))}
-                `);
-            }
+            // for (const socket of sockets) {
+            //     debugLog(`full detail id: ${socket.id}, 
+            //         auth: ${JSON.stringify(socket.data.userId)}, 
+            //         rooms: ${JSON.stringify(Array.from(socket.rooms))}
+            //     `);
+            // }
 
             const targetSocketId = socketId || payload.socketId;
             if (!targetSocketId) {
@@ -183,6 +150,7 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
 
                 if (eventType === 'joinRoom') {
 
+                    // Hàm Helper: Rời phòng cũ -> Vào phòng mới
                     const switchRoomForSocket = (socket, newRoomId) => {
                         for (const room of socket.rooms) {
                             if (room.startsWith('group:') && room !== newRoomId) {
@@ -190,20 +158,46 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                                 debugLog(`[Auto-Switch] Socket ${socket.id} left ${room}`);
                             }
                         }
-                        socket.join(newRoomId);
-                        debugLog(`[Join] Socket ${socket.id} joined ${newRoomId}`);
+                        // Kiểm tra nếu chưa join thì mới join (đỡ log trùng)
+                        if (!socket.rooms.has(newRoomId)) {
+                            socket.join(newRoomId);
+                            debugLog(`[Join] Socket ${socket.id} joined ${newRoomId}`);
+                        }
+                        if (!socket.rooms) {
+                            debugLog(`[ERROR] Socket ${socket.id} cant join ${newRoomId}`);
+                        }
                     };
 
                     if (targetSocketId) {
-                        const targetSocket = io.sockets.sockets.get(targetSocketId);
-                        if (targetSocket) {
-                            switchRoomForSocket(targetSocket, fullRoomId);
-                        } else {
-                            debugLog(`[Warning] Socket ID ${targetSocketId} not found (User might have disconnected/refreshed).`);
+                        try {
+                            const socketsOfTarget = await io.in(targetSocketId).fetchSockets();
+                            debugLog(`current sockets ${socketsOfTarget}`);
+                            if (socketsOfTarget.length > 0) {
+                                const targetSocket = socketsOfTarget[0];
+
+                                debugLog(`[Cluster] Found socket ${targetSocketId} on node ${targetSocket.id === targetSocketId ? 'LOCAL' : 'REMOTE'}. Switching...`);
+
+                                // 1. Auto-Switch: Rời phòng group cũ
+                                // targetSocket.rooms là Set, duyệt qua nó
+                                for (const room of targetSocket.rooms) {
+                                    if (room.startsWith('group:') && room !== fullRoomId) {
+                                        targetSocket.leave(room); // Lệnh này sẽ được bắn qua Redis
+                                        debugLog(`[Auto-Switch] Socket ${targetSocketId} left ${room}`);
+                                    }
+                                }
+
+                                // 2. Join phòng mới
+                                targetSocket.join(fullRoomId);
+                                debugLog(`[Join] Socket ${targetSocketId} joined ${fullRoomId}`);
+
+                            } else {
+                                // Socket không tồn tại trên bất kỳ server nào (đã disconnect)
+                                debugLog(`[Info] Socket ${targetSocketId} not found in cluster.`);
+                            }
+                        } catch (e) {
+                            debugLog(`[Error] Cluster socket fetch failed: ${e.message}`);
                         }
                     }
-
-
                     else {
                         if (payload.sender && payload.sender.id) {
                             io.in(`user:${payload.sender.id}`).socketsJoin(fullRoomId);
@@ -234,9 +228,9 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                     debugLog(`Notified outsiders via '${notifyEventName}' to ${payload.memberIds.length} users`);
                 }
 
-            } else {
-                io.emit(eventType, payload);
             }
+        } else {
+            io.emit(eventType, payload);
         }
     });
     debugLog(`Subscribed to custom Redis channel: ${EVENT_CHAT_CHANNEL} for event verification.`);

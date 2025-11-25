@@ -110,9 +110,9 @@ function registerHandlers(ioInstance) {
 
     ioInstance.on('connection', (socket) => {
         const clientIp = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
-        debugLog(clientIp, ` Client ${socket.id} connected`);
 
         const userId = socket.handshake.auth.userId;
+        debugLog(clientIp, ` Client ${socket.id} connected and user room is user:${userId}`);
 
         socket.join(`user:${userId}`);
         if (userId && userId !== 'undefined') {
@@ -192,13 +192,13 @@ function registerHandlers(ioInstance) {
         socket.on('notifyConfig', (data) => processAndBroadcast(socket, ioInstance, 'notifyConfig', data, {
             senderOnly: true
         }));
-        // --- Logic cho client cũ ---
+        // --- Logic cho client cũ - Longlh remove log ---
         socket.on('room', (room) => {
             socket.room = room;
             const rooms = room.split(',').filter(r => r.trim() !== '');
             if (rooms.length > 0) {
                 socket.join(rooms);
-                debugLog(clientIp, `${socket.id} joined room(s):`, room);
+                //debugLog(clientIp, `${socket.id} joined room(s):`, room);
             }
         });
         const events = ['comments message', 'videochat', 'command'];
@@ -208,10 +208,10 @@ function registerHandlers(ioInstance) {
                 const targetRoom = data.room ? data.room : socket.room;
                 if (targetRoom) {
                     socket.to(targetRoom).emit(eventName, data);
-                    debugLog(clientIp, `Broadcasting event '${eventName}' to room '${targetRoom}' (excluding sender)`);
+                    //debugLog(clientIp, `Broadcasting event '${eventName}' to room '${targetRoom}' (excluding sender)`);
                 } else {
                     ioInstance.emit(eventName, data);
-                    debugLog(clientIp, `Broadcasting event '${eventName}' globally (NO ROOM)`);
+                    //debugLog(clientIp, `Broadcasting event '${eventName}' globally (NO ROOM)`);
                 }
             });
         }
