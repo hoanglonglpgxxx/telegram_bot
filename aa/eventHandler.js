@@ -5,7 +5,7 @@ const { debugLog } = require('./utils.js');
 const EVENT_CHAT_CHANNEL = 'vsystem_chat_event';
 const NONCE_TTL_SECONDS = 60;
 const MAX_TIME_DIFF_SECONDS = 60;
-const ALLOWED_EVENTS = ['newMsg', 'userTyping', 'userStopTyping', 'deleteMsg', 'pinMsg', 'editMsg', 'reactMsg', 'addTag', 'roomUpdated', 'notifyConfig', 'editRoom', 'pinRoom', 'joinRoom'];
+const ALLOWED_EVENTS = ['newMsg', 'userTyping', 'userStopTyping', 'deleteMsg', 'pinMsg', 'editMsg', 'reactMsg', 'addTag', 'roomUpdated', 'notifyConfig', 'editRoom', 'pinRoom', 'joinRoom', 'deleteRoom'];
 /**
  * Hàm chuẩn hóa payload để tạo chuỗi dữ liệu ký.
  * @param {object} data - Dữ liệu đã được loại bỏ signature.
@@ -144,7 +144,8 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                     ...rest,
                     senderId: payload.senderId || 'system',
                     chatRoomId: fullRoomId,
-                    eventType: eventType
+                    eventType: eventType,
+                    socketId: targetSocketId
                 };
 
 
@@ -220,6 +221,7 @@ exports.subscribeAndVerifyEvents = (io, pubClient, subClient) => {
                     if (eventType === 'deleteMsg') notifyEventName = 'deleteMsg';
                     if (eventType === 'pinMsg') notifyEventName = 'pinMsg';
                     if (eventType === 'editMsg') notifyEventName = 'editMsg';
+                    if (eventType === 'deleteRoom') notifyEventName = 'deleteRoom';
 
                     payload.memberIds.forEach(targetUserId => {
                         io.to(`user:${targetUserId}`).emit(notifyEventName, finalPayload);
